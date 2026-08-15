@@ -1,0 +1,22 @@
+# Environnement Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+
+# Fichiers de configuration locaux
+.env
+.env.*
+!.env.example
+
+# Fichiers utilisateur / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Historique de conversation local (optionnel)
+conversation.json
+
+data/
