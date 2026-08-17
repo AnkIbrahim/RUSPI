@@ -4,3 +4,5 @@ faster-whisper
 sounddevice
 numpy
 edge-tts
+requests
+plyer

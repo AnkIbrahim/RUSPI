@@ -12,7 +12,14 @@ from google.genai import types
 from google.genai.errors import ServerError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from core.tools import obtenir_date_heure, ouvrir_application, rechercher_sur_le_web
+from core.tools import (
+    creer_rappel,
+    obtenir_date_heure,
+    obtenir_meteo,
+    ouvrir_application,
+    rechercher_sur_le_web,
+    voir_mes_rappels,
+)
 
 
 def demander_a_ruspi(message: str, historique: List[Dict[str, str]] | None = None) -> str:
@@ -53,9 +60,10 @@ def demander_a_ruspi(message: str, historique: List[Dict[str, str]] | None = Non
         "un assistant IA personnel inspiré de J.A.R.V.I.S. "
         "Tu es serviable, précis et tu réponds toujours en français. "
         "Tu peux désormais effectuer des actions : donner l'heure, ouvrir des "
-        "applications Windows et lancer des recherches web. Quand c'est pertinent, "
-        "utilise ces outils plutôt que de répondre uniquement en texte. "
-        "Ne te présente jamais comme Gemini — tu es R.U.S.P.I."
+        "applications Windows, lancer des recherches web, donner la météo "
+        "actuelle d'une ville, créer un rappel et lister les rappels en attente. "
+        "Quand c'est pertinent, utilise ces outils plutôt que de répondre "
+        "uniquement en texte. Ne te présente jamais comme Gemini — tu es R.U.S.P.I."
     )
 
     try:
@@ -95,6 +103,13 @@ def _appel_gemini_avec_retry(client: genai.Client, contents: list, instruction_s
             temperature=0.7,
             max_output_tokens=800,
             system_instruction=instruction_systeme,
-            tools=[obtenir_date_heure, ouvrir_application, rechercher_sur_le_web],
+            tools=[
+                obtenir_date_heure,
+                ouvrir_application,
+                rechercher_sur_le_web,
+                obtenir_meteo,
+                creer_rappel,
+                voir_mes_rappels,
+            ],
         ),
     )

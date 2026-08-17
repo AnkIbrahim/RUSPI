@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import tempfile
 import time
 import wave
@@ -38,8 +39,9 @@ def _charger_modele_whisper():
         ) from erreur
 
     try:
-        # Le modèle 'base' est un bon compromis entre performance et charge mémoire.
-        _WHISPER_MODEL = WhisperModel("base", device="cpu", compute_type="int8")
+        # Le modèle 'small' offre une meilleure précision que 'base',
+        # notamment sur les noms propres, pour un coût en performance modéré.
+        _WHISPER_MODEL = WhisperModel("small", device="cpu", compute_type="int8")
     except Exception as erreur:  # pragma: no cover - dépend de l'environnement
         raise RuntimeError(
             "Le modèle de transcription vocale n'a pas pu être chargé. Vérifiez votre installation de faster-whisper."
@@ -74,9 +76,22 @@ def _ecrire_wav_depuis_numpy(nom_fichier: str, audio, frequence: int = 16000) ->
 
 
 def ecouter_micro(duree_secondes: int = 6) -> str:
-    """Enregistre le micro, le transcrit en français, puis retourne le texte."""
+    """Enregistre le micro, le transcrit en français, puis retourne le texte.
+    
+    Détecte aussi :
+    - Le silence complet (niveau sonore RMS très bas)
+    - Les hallucinations typiques de Whisper (phrases générées sur du silence)
+    """
     if duree_secondes <= 0:
         raise ValueError("La durée d'enregistrement doit être supérieure à 0 seconde.")
+
+    # Phrases connues comme hallucinations de Whisper sur du silence ou du bruit
+    HALLUCINATIONS_WHISPER = [
+        "Sous-titres réalisés par la communauté d'Amara.org",
+        "Merci d'avoir regardé cette vidéo",
+        "Abonnez-vous à la chaîne",
+        "Sous-titres réalisés par la communauté",
+    ]
 
     try:
         import numpy as np
@@ -113,6 +128,18 @@ def ecouter_micro(duree_secondes: int = 6) -> str:
         if audio.size == 0:
             raise RuntimeError("Le microphone n'a renvoyé aucun son.")
 
+        # Calcul du niveau sonore moyen (RMS = Root Mean Square) pour détecter le silence
+        import numpy as np
+        rms = float(np.sqrt(np.mean(audio ** 2)))
+
+        # Si le niveau est très faible (silence quasi total), rejeter sans transcrire
+        # Un RMS < 0.01 indique généralement du silence ou du bruit ambiant très faible
+        if rms < 0.01:
+            raise RuntimeError(
+                "Aucune parole détectée (silence détecté). Veuillez réessayer et parler "
+                "plus fort ou plus près du microphone."
+            )
+
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fichier_temp:
             fichier_wav = fichier_temp.name
 
@@ -126,6 +153,16 @@ def ecouter_micro(duree_secondes: int = 6) -> str:
 
         if not texte:
             raise RuntimeError("Le microphone a capté du son, mais la transcription est vide.")
+
+        # Vérifier si le texte transcrit est une hallucination connue de Whisper
+        # (surtout si le RMS indiquait un signal très faible)
+        if rms < 0.05:  # RMS bas = risque d'hallucination
+            for hallucination in HALLUCINATIONS_WHISPER:
+                if texte.lower() == hallucination.lower() or hallucination.lower() in texte.lower():
+                    raise RuntimeError(
+                        "Aucune parole détectée (hallucination Whisper sur silence détectée). "
+                        "Veuillez réessayer et parler plus fort ou plus près du microphone."
+                    )
 
         return texte
 
@@ -143,9 +180,43 @@ def ecouter_micro(duree_secondes: int = 6) -> str:
                 pass
 
 
+def _nettoyer_texte_pour_parole(texte: str) -> str:
+    """Nettoie le texte avant sa lecture vocale pour supprimer les marqueurs Markdown.
+
+    Edge TTS lit certains caractères comme des symboles explicites (astérisque,
+    tirets de liste, crochets de liens, guillemets) au lieu d'une phrase fluide.
+    On les enlève avant génération audio pour obtenir une lecture naturelle.
+    """
+    if texte is None:
+        return ""
+
+    texte = str(texte).replace("\r\n", "\n").replace("\r", "\n")
+
+    # Suppression des éléments Markdown courants et des liens.
+    texte = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", texte)
+    texte = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", texte)
+    texte = texte.replace("**", "").replace("__", "").replace("*", "").replace("#", "")
+    texte = texte.replace("`", "").replace("~", "")
+    texte = texte.replace("_", "")
+
+    # Nettoyage des listes, blocquotes et caractères typographiques qui sont lus
+    # littéralement par synthèse vocale.
+    texte = re.sub(r"^\s*[-*+]\s+", "", texte, flags=re.MULTILINE)
+    texte = re.sub(r"^\s*\d+\.\s+", "", texte, flags=re.MULTILINE)
+    texte = re.sub(r"^\s*>\s*", "", texte, flags=re.MULTILINE)
+    texte = texte.replace(""", '"').replace(""", '"')
+    texte = texte.replace("«", "").replace("»", "")
+    texte = texte.replace("'", "'").replace("'", "'")
+    texte = texte.replace("—", " ").replace("–", " ").replace("…", " ... ")
+    texte = texte.replace("•", " ")
+
+    texte = re.sub(r"\s+", " ", texte).strip()
+    return texte
+
+
 def parler(texte: str) -> None:
     """Lit à voix haute le texte reçu en français via Edge TTS."""
-    texte = (texte or "").strip()
+    texte = _nettoyer_texte_pour_parole(texte)
     if not texte:
         return
 
@@ -164,8 +235,12 @@ def parler(texte: str) -> None:
             fichier_temp = Path(fichier_temporaire.name)
 
         async def _generer_audio() -> None:
-            voix = "fr-FR-DeniseNeural"
-            lecteur = edge_tts.Communicate(texte, voix)
+            voix = "fr-FR-HenriNeural"
+            # On ajoute un très court silence au début (points de suspension)
+            # pour éviter que le tout premier mot ne soit coupé par le lecteur
+            # audio qui met une fraction de seconde à s'initialiser.
+            texte_avec_marge = "... " + texte
+            lecteur = edge_tts.Communicate(texte_avec_marge, voix)
             await lecteur.save(str(fichier_temp))
 
         asyncio.run(_generer_audio())

@@ -4,6 +4,8 @@ Ce fichier lance une boucle d'interaction en terminal, envoie les messages
 à l'API Gemini et garde l'historique de conversation dans des fichiers JSON.
 """
 
+import threading
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -17,7 +19,44 @@ from core.memory import (
     nouveau_fichier_session,
     sauvegarder_session,
 )
+from core.rappels import verifier_rappels_en_attente
 from core.voice import ecouter_micro, parler
+
+
+def _surveiller_rappels_en_arriere_plan() -> None:
+    """Vérifie automatiquement les rappels toutes les 30 secondes.
+
+    Ce thread tourne en arrière-plan et ne bloque pas la boucle principale
+    de conversation. S'il rencontre un problème, il l'affiche proprement sans
+    arrêter le programme.
+    """
+    while True:
+        try:
+            rappels_declenches = verifier_rappels_en_attente()
+            for texte_rappel in rappels_declenches:
+                try:
+                    from plyer import notification
+
+                    notification.notify(
+                        title="R.U.S.P.I - Rappel",
+                        message=texte_rappel,
+                        app_name="R.U.S.P.I",
+                        timeout=10,
+                    )
+                except Exception:
+                    # Sur certains systèmes, la notification native n'est pas
+                    # disponible ou le package manque. On garde le programme
+                    # stable et on affiche le rappel dans le terminal.
+                    print(f"Rappel : {texte_rappel}")
+
+                try:
+                    parler(texte_rappel)
+                except Exception as erreur:
+                    print(f"Erreur lors de l'annonce vocale du rappel : {erreur}")
+        except Exception as erreur:
+            print(f"Erreur de surveillance des rappels : {erreur}")
+
+        time.sleep(30)
 
 
 def choisir_session() -> tuple[str | None, str | None]:
@@ -58,6 +97,13 @@ def main() -> None:
 
     print("R.U.S.P.I est prêt.")
     print("Tapez 'quitter' ou 'exit' pour fermer le programme.")
+
+    thread_rappels = threading.Thread(
+        target=_surveiller_rappels_en_arriere_plan,
+        daemon=True,
+        name="ruspi-rappels",
+    )
+    thread_rappels.start()
 
     nom_session, chemin_session = choisir_session()
 
